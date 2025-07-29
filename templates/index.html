@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🤖 Hybrid Chatbot (RAG + Web Search)</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="chatbox">
+        <h2>Hybrid (RAG + Web Search)</h2>
+        <div id="chat-log"></div>
+        <input type="text" id="user-input" placeholder="Ask a question...">
+        <button onclick="sendQuestion()">Send</button>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
