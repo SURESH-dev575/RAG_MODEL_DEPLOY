@@ -6,3 +6,4 @@ pandas
 langchain
 langchain-community
 langchain-core
+sentence-transformers
