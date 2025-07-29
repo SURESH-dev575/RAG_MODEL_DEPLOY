@@ -13,7 +13,7 @@ from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
 os.environ["TAVILY_API_KEY"] = "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"
 
 # Load local knowledge
-with open("C:\\Users\\sures\\OneDrive\\Desktop\\AI PROJECT\\2024_state_of_the_union.txt", "r", encoding="utf-8") as f:
+with open("2024_state_of_the_union.txt", "r", encoding="utf-8") as f:
     raw_text = f.read()
 
 text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
