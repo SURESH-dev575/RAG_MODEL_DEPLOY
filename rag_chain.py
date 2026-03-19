@@ -10,42 +10,33 @@ from langchain_core.output_parsers.string import StrOutputParser
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.llms import HuggingFacePipeline
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 from dotenv import load_dotenv
 
-# ---------------------
 # Load environment variables
-# ---------------------
-load_dotenv()  # reads from .env if present
+load_dotenv() 
 os.environ["TAVILY_API_KEY"] = os.getenv("TAVILY_API_KEY", "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")
 
 MODEL_NAME = os.getenv("FLAN_MODEL", "google/flan-t5-large")
 EMBEDDING_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# ---------------------
-# Text splitter & vector DB (persistent storage)
-# ---------------------
+# Text splitter & vector DB
 text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 embedding_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
 vectorDB = Chroma(collection_name="rag_docs", embedding_function=embedding_model, persist_directory="chroma_store")
 retriever = vectorDB.as_retriever()
 
-# ---------------------
 # LLM setup
-# ---------------------
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
 generator = pipeline("text2text-generation", model=model, tokenizer=tokenizer, max_new_tokens=256)
 llm = HuggingFacePipeline(pipeline=generator)
 
-# ---------------------
 # Prompt / RAG chain
-# ---------------------
 prompt_template = PromptTemplate.from_template("""
 Use the context below to answer the question.
-If you don’t know the answer, say "I don't know."
+If you don't know the answer, say "I don't know."
 
 Context:
 {context}
@@ -61,14 +52,10 @@ rag_chain = (
     | StrOutputParser()
 )
 
-# ---------------------
 # Web search tool (Tavily)
-# ---------------------
 search_tool = TavilySearchResults()
 
-# ---------------------
 # File text extraction
-# ---------------------
 def extract_text_from_file(path):
     _, ext = os.path.splitext(path.lower())
     ext = ext.strip(".")
@@ -97,13 +84,11 @@ def add_document_from_path(path):
         raise ValueError("No text extracted from file.")
     chunks = text_splitter.create_documents([text])
     vectorDB.add_documents(chunks)
-    vectorDB.persist()  # save to disk
+    # Chroma auto-persists in newer versions, but we leave this for compatibility
     global retriever
     retriever = vectorDB.as_retriever()
 
-# ---------------------
 # Hybrid RAG function
-# ---------------------
 def hybrid_rag(query):
     q = query.strip()
     if q.lower() in ["hi", "hello", "hii", "hey"]:
@@ -118,14 +103,14 @@ def hybrid_rag(query):
 
     # Fallback: Web + auto enrichment
     if "I don't know" in answer or len(answer.strip()) < 15:
-        web_docs = search_tool.run(q)
+        web_docs = search_tool.invoke(q) # Updated to .invoke()
         if not web_docs:
             return "🤖 Sorry, I couldn't find an answer."
 
         combined = "\n".join([d.get("content", "") for d in web_docs])
         new_chunks = text_splitter.create_documents([combined])
         vectorDB.add_documents(new_chunks)
-        vectorDB.persist()
+        
         global retriever
         retriever = vectorDB.as_retriever()
         answer = rag_chain.invoke(q)
