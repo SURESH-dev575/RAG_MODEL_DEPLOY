@@ -3,14 +3,6 @@ import pdfplumber
 import docx
 import pytesseract
 from PIL import Image
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers.string import StrOutputParser
-from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -19,7 +11,7 @@ os.environ["TAVILY_API_KEY"] = os.getenv("TAVILY_API_KEY", "tvly-dev-iJGLtd7EEIB
 MODEL_NAME = os.getenv("FLAN_MODEL", "google/flan-t5-small") # Using small for free tier
 EMBEDDING_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# Global variables for Lazy Loading
+# Global variables
 ai_initialized = False
 rag_chain = None
 retriever = None
@@ -28,13 +20,23 @@ search_tool = None
 text_splitter = None
 
 def initialize_ai():
-    """Loads all the heavy AI models ONLY when called."""
+    """Loads all heavy libraries and AI models ONLY when the first question is asked."""
     global ai_initialized, rag_chain, retriever, vectorDB, search_tool, text_splitter
     if ai_initialized:
-        return # Already loaded!
+        return
 
     print("⏳ First request received! Initializing heavy AI models... this might take a minute.")
     
+    # WE MOVED ALL HEAVY IMPORTS HERE!
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+    from langchain_core.runnables import RunnablePassthrough
+    from langchain_core.prompts import PromptTemplate
+    from langchain_core.output_parsers.string import StrOutputParser
+    from langchain_community.tools.tavily_search import TavilySearchResults
+    from langchain.text_splitter import CharacterTextSplitter
+    from langchain_community.vectorstores import Chroma
+    from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
+
     # 1. Setup tools & splitters
     text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     embedding_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
@@ -87,6 +89,7 @@ def extract_text_from_file(path):
                 texts.append(page_text)
         return "\n".join(texts)
     elif ext == "docx":
+        import docx # Lazy load this too just in case
         doc = docx.Document(path)
         return "\n".join([p.text for p in doc.paragraphs])
     elif ext in ("png", "jpg", "jpeg"):
