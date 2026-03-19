@@ -8,8 +8,16 @@
     <div class="chatbox">
         <h2>Hybrid (RAG + Web Search)</h2>
         <div id="chat-log"></div>
-        <input type="text" id="user-input" placeholder="Ask a question...">
-        <button onclick="sendQuestion()">Send</button>
+        <div class="controls">
+            <input type="text" id="user-input" placeholder="Ask a question...">
+            <button id="send-btn">Send</button>
+        </div>
+        
+        <div class="upload">
+            <input type="file" id="file-input">
+            <button id="upload-btn">Upload</button>
+        </div>
+        <div id="upload-msg" style="margin-top: 8px; font-size: 12px; color: #06b6d4;"></div>
     </div>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
