@@ -16,44 +16,61 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv() 
 os.environ["TAVILY_API_KEY"] = os.getenv("TAVILY_API_KEY", "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")
-
-MODEL_NAME = os.getenv("FLAN_MODEL", "google/flan-t5-large")
+MODEL_NAME = os.getenv("FLAN_MODEL", "google/flan-t5-small") # Using small for free tier
 EMBEDDING_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# Text splitter & vector DB
-text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-embedding_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+# Global variables for Lazy Loading
+ai_initialized = False
+rag_chain = None
+retriever = None
+vectorDB = None
+search_tool = None
+text_splitter = None
 
-vectorDB = Chroma(collection_name="rag_docs", embedding_function=embedding_model, persist_directory="chroma_store")
-retriever = vectorDB.as_retriever()
+def initialize_ai():
+    """Loads all the heavy AI models ONLY when called."""
+    global ai_initialized, rag_chain, retriever, vectorDB, search_tool, text_splitter
+    if ai_initialized:
+        return # Already loaded!
 
-# LLM setup
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-generator = pipeline("text2text-generation", model=model, tokenizer=tokenizer, max_new_tokens=256)
-llm = HuggingFacePipeline(pipeline=generator)
+    print("⏳ First request received! Initializing heavy AI models... this might take a minute.")
+    
+    # 1. Setup tools & splitters
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    embedding_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    search_tool = TavilySearchResults()
 
-# Prompt / RAG chain
-prompt_template = PromptTemplate.from_template("""
-Use the context below to answer the question.
-If you don't know the answer, say "I don't know."
+    # 2. Setup Vector DB
+    vectorDB = Chroma(collection_name="rag_docs", embedding_function=embedding_model, persist_directory="chroma_store")
+    retriever = vectorDB.as_retriever()
 
-Context:
-{context}
+    # 3. Setup LLM
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+    generator = pipeline("text2text-generation", model=model, tokenizer=tokenizer, max_new_tokens=256)
+    llm = HuggingFacePipeline(pipeline=generator)
 
-Question: {question}
-Answer:
-""")
+    # 4. Setup Prompt & Chain
+    prompt_template = PromptTemplate.from_template("""
+    Use the context below to answer the question.
+    If you don't know the answer, say "I don't know."
 
-rag_chain = (
-    {"context": retriever, "question": RunnablePassthrough()}
-    | prompt_template
-    | llm
-    | StrOutputParser()
-)
+    Context:
+    {context}
 
-# Web search tool (Tavily)
-search_tool = TavilySearchResults()
+    Question: {question}
+    Answer:
+    """)
+
+    rag_chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt_template
+        | llm
+        | StrOutputParser()
+    )
+    
+    ai_initialized = True
+    print("✅ AI Models fully loaded and ready!")
 
 # File text extraction
 def extract_text_from_file(path):
@@ -79,17 +96,19 @@ def extract_text_from_file(path):
         raise ValueError(f"Unsupported file type: {ext}")
 
 def add_document_from_path(path):
+    initialize_ai() # Make sure AI is loaded first
     text = extract_text_from_file(path)
     if not text or len(text.strip()) == 0:
         raise ValueError("No text extracted from file.")
     chunks = text_splitter.create_documents([text])
     vectorDB.add_documents(chunks)
-    # Chroma auto-persists in newer versions, but we leave this for compatibility
     global retriever
     retriever = vectorDB.as_retriever()
 
 # Hybrid RAG function
 def hybrid_rag(query):
+    initialize_ai() # Lazy load on first question!
+    
     q = query.strip()
     if q.lower() in ["hi", "hello", "hii", "hey"]:
         return f"{q} 😊 How can I assist you today?"
@@ -103,7 +122,7 @@ def hybrid_rag(query):
 
     # Fallback: Web + auto enrichment
     if "I don't know" in answer or len(answer.strip()) < 15:
-        web_docs = search_tool.invoke(q) # Updated to .invoke()
+        web_docs = search_tool.invoke(q)
         if not web_docs:
             return "🤖 Sorry, I couldn't find an answer."
 
@@ -116,19 +135,3 @@ def hybrid_rag(query):
         answer = rag_chain.invoke(q)
 
     return answer
-
-if __name__ == "__main__":
-    print("📚 Hybrid RAG System Ready")
-    while True:
-        user_input = input("🧠 Your Question (or 'upload <path>', 'exit'): ").strip()
-        if user_input.lower() == "exit":
-            break
-        if user_input.lower().startswith("upload"):
-            path = user_input.split(" ", 1)[1]
-            try:
-                add_document_from_path(path)
-                print(f"✅ File '{path}' added to knowledge base.")
-            except Exception as e:
-                print("❌ Upload error:", e)
-            continue
-        print("\n✅ Answer:", hybrid_rag(user_input))
