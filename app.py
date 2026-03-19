@@ -1,9 +1,13 @@
 from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os
-from rag_chain import hybrid_rag, add_document_from_path  # local module
+from rag_chain import hybrid_rag, add_document_from_path
 
 app = Flask(__name__)
+# Enable CORS so frontend can communicate with backend if hosted separately
+CORS(app) 
+
 app.config["UPLOAD_FOLDER"] = "uploaded_files"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
@@ -26,11 +30,9 @@ def ask():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    """
-    Accepts file uploads from the frontend, saves them, and adds to vector DB via rag_chain.add_document_from_path.
-    """
     if "file" not in request.files:
         return jsonify({"ok": False, "msg": "No file part"}), 400
+        
     file = request.files["file"]
     if file.filename == "":
         return jsonify({"ok": False, "msg": "No selected file"}), 400
@@ -47,5 +49,4 @@ def upload():
         return jsonify({"ok": False, "msg": f"Indexing error: {str(e)}"}), 500
 
 if __name__ == "__main__":
-    # In production, use a WSGI server like Gunicorn.
     app.run(host="0.0.0.0", port=5000, debug=True)
