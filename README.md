@@ -1,3 +1,4 @@
+COLAB LINK : https://colab.research.google.com/drive/1daa66jU8IoXZdWwCNSQSc5OwVvnD_Jkk?usp=sharing
 Hybrid AI Copilot (RAG + Web Search)
 A full-stack conversational AI application that combines local document retrieval (RAG) with live internet search capabilities. Built with Python, Flask, LangChain, and open-source Hugging Face models.
 
