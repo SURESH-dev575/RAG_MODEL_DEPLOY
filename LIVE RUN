@@ -1,0 +1,273 @@
+# MAIN AI PROJECT
+
+!pip install tavily-python
+!pip install langchain langchain_community langchain_chroma
+!pip install tavily-python
+!pip install langchain langchain_community langchain_chroma
+
+!pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
+!pip install "transformers<5.0"
+!pip install --upgrade pillow transformers
+!pip install -U ddgs
+
+
+pip install --upgrade "pillow<11.0.0"
+
+
+# RTX 3050
+
+import os
+import pdfplumber
+import docx
+import pytesseract
+import torch
+from PIL import Image
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers.string import StrOutputParser
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
+from dotenv import load_dotenv
+
+# ---------------------
+# Configuration
+# ---------------------
+load_dotenv()
+
+# Smarter 1.5B Model (Fits perfectly in RTX 3050 VRAM)
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
+EMBEDDING_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+# ---------------------
+# Hardware Acceleration Check (RTX 3050)
+# ---------------------
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("\n" + "="*50)
+print(f" HARDWARE DETECTED: {device.upper()}")
+if device == "cuda":
+    print(f" GPU ACTIVE: Utilizing NVIDIA CUDA Cores")
+else:
+    print(" WARNING: Running on CPU. This will be very slow.")
+print("="*50 + "\n")
+
+# ---------------------
+# Text splitter & vector DB
+# ---------------------
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=600,  # Slightly smaller chunks for higher precision
+    chunk_overlap=150,
+    separators=["\n\n", "\n", " ", ""]
+)
+
+# Load embeddings directly into GPU memory
+embedding_model = HuggingFaceEmbeddings(
+    model_name=EMBEDDING_MODEL,
+    model_kwargs={'device': device}
+)
+
+vectorDB = Chroma(collection_name="rag_docs", embedding_function=embedding_model, persist_directory="chroma_store")
+
+#  UPGRADE 1: MMR (Maximum Marginal Relevance) for higher DB accuracy
+retriever = vectorDB.as_retriever(
+    search_type="mmr",
+    search_kwargs={"k": 3, "fetch_k": 6} # Fetches 6, picks the best 3 unique chunks
+)
+
+# ---------------------
+# LLM setup (OPTIMIZED FOR RTX 3050)
+# ---------------------
+print(" Loading AI Brain (this takes a moment)...")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+# Force Float16 precision for massive speed boost and lower VRAM usage
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+    device_map="auto" if device == "cuda" else None
+)
+
+#  UPGRADE 2: Added temperature=0.0 for maximum reliability (no hallucinations)
+generator = pipeline(
+    "text-generation",
+    model=model,
+    tokenizer=tokenizer,
+    max_new_tokens=256,
+    return_full_text=False,
+    do_sample=False,
+    temperature=0.0
+)
+llm = HuggingFacePipeline(pipeline=generator)
+
+# ---------------------
+# Prompt / RAG chains
+# ---------------------
+prompt_template = PromptTemplate.from_template("""
+You are a highly accurate data extraction assistant. Use the following context to answer the question exactly as it appears in the text.
+Extract all relevant details. If the context does not contain the answer, state "Information is missing." Do not guess.
+
+Context:
+{context}
+
+Question: {question}
+Answer:
+""")
+
+rag_chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt_template
+    | llm
+    | StrOutputParser()
+)
+
+# 100% Free Web Search
+search_tool = DuckDuckGoSearchRun()
+
+# ---------------------
+# File text extraction
+# ---------------------
+def extract_text_from_file(path):
+    _, ext = os.path.splitext(path.lower())
+    ext = ext.strip(".")
+    if ext in ("txt", "md", "py", "java", "cpp", "c", "js", "ts", "html", "css", "json"):
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    elif ext == "pdf":
+        texts = []
+        with pdfplumber.open(path) as pdf:
+            for p in pdf.pages:
+                page_text = p.extract_text() or ""
+                texts.append(page_text)
+        return "\n".join(texts)
+    elif ext == "docx":
+        doc = docx.Document(path)
+        return "\n".join([p.text for p in doc.paragraphs])
+    elif ext in ("png", "jpg", "jpeg"):
+        img = Image.open(path)
+        return pytesseract.image_to_string(img)
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+
+def add_document_from_path(path):
+    text = extract_text_from_file(path)
+    if not text or len(text.strip()) == 0:
+        raise ValueError("No text extracted from file.")
+    chunks = text_splitter.create_documents([text])
+    vectorDB.add_documents(chunks)
+    global retriever
+    retriever = vectorDB.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_k": 6})
+
+# ---------------------
+# Core RAG Logic Functions
+# ---------------------
+def online_rag(query):
+    print(" Searching DuckDuckGo...")
+    try:
+        web_text = search_tool.invoke(query)
+        if not web_text:
+            return " Sorry, I couldn't find an answer on the web."
+
+        prompt = prompt_template.format(context=web_text, question=query)
+        return llm.invoke(prompt).strip()
+    except Exception as e:
+        return f" Web search failed: {e}"
+
+def offline_rag(query):
+    return rag_chain.invoke(query).strip()
+
+def hybrid_rag(query):
+    answer = rag_chain.invoke(query).strip()
+
+    if "information is missing" in answer.lower() or len(answer) < 15:
+        print(" Answer not in database. Consulting DuckDuckGo...")
+        try:
+            web_text = search_tool.invoke(query)
+            if not web_text:
+                return " Sorry, I couldn't find an answer locally or on the web."
+
+            #  UPGRADE 3: Bypass DB saving to massively reduce latency
+            prompt = prompt_template.format(context=web_text, question=query)
+            return llm.invoke(prompt).strip()
+
+        except Exception as e:
+            print(f" Web search error: {e}")
+
+    return answer
+# ---------------------
+# Main Execution Loop (CLI)
+# ---------------------
+if __name__ == "__main__":
+    print("\n System Ready!")
+
+    while True:
+        # 1. Print the menu INSIDE the loop so it shows every time
+        print("\n==================================")
+        print("  Choose Your AI Mode:")
+        print(" 1 - Online Mode (Internet only)")
+        print(" 2 - Offline Mode (Your Docs only)")
+        print(" 3 - Hybrid Mode (Docs + Internet fallback)")
+        print(" 4 - Exit")
+        print("==================================")
+
+        mode = input("Select mode (1/2/3/4): ").strip()
+
+        # 2. Handle the Exit option first
+        if mode == "4":
+            print("Goodbye!")
+            break
+
+        if mode not in ["1", "2", "3"]:
+            print(" Invalid selection. Please select 1, 2, 3, or 4.")
+            continue
+
+        # 3. Ask for the question or upload command
+        user_input = input("\n Your Question (or 'upload <path>'): ").strip()
+
+        if not user_input:
+            continue
+
+        # Optional: Keep "exit" here as well just in case you type it by habit
+        if user_input.lower() == "exit":
+            print("Goodbye!")
+            break
+
+        # UNIVERSAL LOCAL UPLOAD LOGIC
+        if user_input.lower().startswith("upload"):
+            if mode == "1":
+                print(" Note: You selected Online Mode (1). Uploaded docs won't be searched for this query.")
+
+            parts = user_input.split(" ", 1)
+            if len(parts) < 2:
+                print(" Please provide the file path. Example: upload C:\\Users\\Name\\resume.pdf")
+                continue
+
+            path = parts[1].strip().strip("\"'")
+
+            if not os.path.exists(path):
+                print(f" File not found at: {path}")
+                continue
+
+            try:
+                print(f" Extracting text from '{os.path.basename(path)}'...")
+                add_document_from_path(path)
+                print(f" File successfully saved to the local database!")
+            except Exception as e:
+                print(f" Upload error: {e}")
+            continue
+
+        else:
+            try:
+                if mode == "1":
+                    final_answer = online_rag(user_input)
+                elif mode == "2":
+                    print(f" Searching document database...")
+                    final_answer = offline_rag(user_input)
+                elif mode == "3":
+                    print(f" Searching document database...")
+                    final_answer = hybrid_rag(user_input)
+
+                print(f"\n Answer: {final_answer}\n")
+            except Exception as e:
+                print(f"\n Error generating answer: {e}\n")
