@@ -1,12 +1,12 @@
-!pip install deep-translator duckduckgo-search rich gradio
-!pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
-!pip install "transformers<5.0"
-!pip install --upgrade pillow transformers
-!pip install -U ddgs
-!pip install tavily-python
-!pip install langchain langchain_community langchain_chroma
-!pip install --upgrade pillow
-!pip install --upgrade "pillow<11.0.0"
+# !pip install deep-translator duckduckgo-search rich gradio
+# !pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
+# !pip install "transformers<5.0"
+# !pip install --upgrade pillow transformers
+# !pip install -U ddgs
+# !pip install tavily-python
+# !pip install langchain langchain_community langchain_chroma
+# !pip install --upgrade pillow
+# !pip install --upgrade "pillow<11.0.0"
 
 import os
 import re
@@ -18,7 +18,7 @@ import pdfplumber
 import docx
 import pytesseract
 import torch
-import gradio as gr
+import gradio as gr # Added Gradio Import
 from PIL import Image
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from langchain_core.runnables import RunnablePassthrough
@@ -29,11 +29,21 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 from dotenv import load_dotenv
 
+# --- RICH UI IMPORTS ---
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt
+
+# Initialize the rich console
+console = Console()
+# -----------------------
+
 # Import the free translation library
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
-    print("[!] Please run: pip install deep-translator")
+    console.print("[bold red][!] Please run: pip install deep-translator[/bold red]")
     sys.exit(1)
 
 try:
@@ -52,9 +62,9 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print("\n" + "━" * 50)
-print(f"  HARDWARE DETECTED: {device.upper()} ")
-print("━" * 50 + "\n")
+console.print("\n[bold cyan]" + "━" * 50 + "[/bold cyan]")
+console.print(f"[bold white] 🖥️  HARDWARE DETECTED: {device.upper()} [/bold white]", justify="center")
+console.print("[bold cyan]" + "━" * 50 + "[/bold cyan]\n")
 
 # ---------------------
 # Text Splitter & Vector Store
@@ -70,33 +80,33 @@ retriever = vectorDB.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fet
 # ---------------------
 # LLM Setup & Generation Config Fix
 # ---------------------
-print("Loading AI Brain (this takes a moment)...")
-tok = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    device_map="auto" if device == "cuda" else None,
-)
+with console.status("[bold yellow]Loading AI Brain (this takes a moment)...[/bold yellow]", spinner="dots"):
+    tok = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        device_map="auto" if device == "cuda" else None,
+    )
 
-if hasattr(model.generation_config, "max_length"):
-    model.generation_config.max_length = None
-if hasattr(model.config, "max_length"):
-    model.config.max_length = None
+    if hasattr(model.generation_config, "max_length"):
+        model.generation_config.max_length = None
+    if hasattr(model.config, "max_length"):
+        model.config.max_length = None
 
-model.generation_config.max_new_tokens = 768
+    model.generation_config.max_new_tokens = 768
 
-gen = pipeline(
-    "text-generation",
-    model=model,
-    tokenizer=tok,
-    max_new_tokens=768,
-    max_length=None,
-    return_full_text=False,
-    do_sample=False,
-    temperature=0.0,
-    repetition_penalty=1.15,
-)
-llm = HuggingFacePipeline(pipeline=gen)
+    gen = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tok,
+        max_new_tokens=768,
+        max_length=None,
+        return_full_text=False,
+        do_sample=False,
+        temperature=0.0,
+        repetition_penalty=1.15,
+    )
+    llm = HuggingFacePipeline(pipeline=gen)
 
 # =====================================================
 #  INTENT DETECTION & KEYWORD OPTIMIZATION
@@ -185,7 +195,7 @@ def contextualize_user_query(query: str, chat_history: list) -> str:
     if not chat_history:
         return query
         
-    print("[*] Analyzing conversation context...")
+    console.print("[dim] [*] Analyzing conversation context...[/dim]")
     formatted_hist = format_history_for_prompt(chat_history)
     
     standalone_query = llm.invoke(
@@ -198,7 +208,7 @@ def contextualize_user_query(query: str, chat_history: list) -> str:
     if not standalone_query:
         return query
         
-    print(f"[Memory] Rewrote Question To: '{standalone_query}'")
+    console.print(f"[dim] [Memory] Rewrote Question To: '{standalone_query}'[/dim]")
     return standalone_query
 
 # =====================================================
@@ -207,19 +217,33 @@ def contextualize_user_query(query: str, chat_history: list) -> str:
 def handle_image_request(query: str, chat_history: list) -> str:
     standalone = contextualize_user_query(query, chat_history)
     subject = extract_search_keywords(standalone)
+    console.print(f"[dim] [*] Opening Google Images for: '{subject}'...[/dim]")
+
     encoded = subject.replace(" ", "+")
     search_url = f"https://www.google.com/search?tbm=isch&q={encoded}"
-    return f"🖼️ Image Search for '{subject}':\n[Click here to view images]({search_url})"
+
+    try:
+        webbrowser.open(search_url)
+        return f"🖼️ Opened Google Images for '{subject}' directly in your web browser.\nLink: {search_url}"
+    except Exception as e:
+        return f"Failed to open browser: {e}\nHere is the link: {search_url}"
 
 def handle_video_request(query: str, chat_history: list) -> str:
     standalone = contextualize_user_query(query, chat_history)
     subject = extract_search_keywords(standalone)
+    console.print(f"[dim] [*] Opening YouTube for: '{subject}'...[/dim]")
+
     encoded = subject.replace(" ", "+")
     search_url = f"https://www.youtube.com/results?search_query={encoded}"
-    return f"📺 YouTube Video Search for '{subject}':\n[Click here to view videos]({search_url})"
+
+    try:
+        webbrowser.open(search_url)
+        return f"📺 Opened YouTube videos for '{subject}' directly in your web browser.\nLink: {search_url}"
+    except Exception as e:
+        return f"Failed to open browser: {e}\nHere is the link: {search_url}"
 
 def handle_translation(query: str) -> str:
-    print("[*] Connecting to translation services...")
+    console.print("[dim] [*] Connecting to translation services...[/dim]")
     query_lower = query.lower()
     lang_map = {
         "telugu": "te", "hindi": "hi", "spanish": "es", "french": "fr",
@@ -318,7 +342,7 @@ def web_search(query: str, max_results: int = 5) -> str:
                 chunks.append(f"Source: {title} (URL: {url})\n{content}")
             return "\n\n".join(chunks) if len(chunks) > 1 else "No web results found."
         except Exception as e:
-            print(f"Tavily search failed ({e}), falling back to DuckDuckGo...")
+            console.print(f"[dim red] Tavily search failed ({e}), falling back to DuckDuckGo...[/dim red]")
 
     try:
         from langchain_community.tools import DuckDuckGoSearchResults
@@ -339,7 +363,7 @@ def append_verified_urls(answer: str, web_text: str) -> str:
     unique_urls = [u for u in urls if not (u in seen or seen.add(u))]
 
     if unique_urls:
-        answer += "\n\n**Verified Web Links:**\n"
+        answer += "\n\n**🌐 Verified Web Links:**\n"
         for u in unique_urls:
             answer += f"- [{u}]({u})\n"
     return answer
@@ -380,11 +404,13 @@ def save_knowledge_to_db(query: str, answer: str):
     try:
         today_str = date.today().strftime("%B %d, %Y")
         memory_text = f"Learned Fact (Date: {today_str})\nUser Question: {query}\nVerified Answer: {answer}"
+        
         chunks = splitter.create_documents([memory_text])
         vectorDB.add_documents(chunks)
-        print("[Self-Learning] Saved this new knowledge to the local database!")
+        
+        console.print("[dim green]💾 [Self-Learning] Saved this new knowledge to the local database![/dim green]")
     except Exception as e:
-        print(f"Failed to save memory: {e}")
+        console.print(f"[dim red] Failed to save memory: {e}[/dim red]")
 
 # =====================================================
 #  CORE GENERATION LOGIC
@@ -420,16 +446,21 @@ def answer_with_llm(query: str, context: str, chat_history: list, is_offline: bo
 
 def online_rag(raw_query: str, chat_history: list) -> str:
     standalone_query = contextualize_user_query(raw_query, chat_history)
-    print("Searching the web...")
+    msg = " Searching the web (Tavily)..." if (TAVILY_AVAILABLE and TAVILY_API_KEY) else " Searching the web (DuckDuckGo fallback)..."
+    console.print(f"[dim]{msg}[/dim]")
+    
     web_text = web_search(standalone_query)
     answer = answer_with_llm(standalone_query, web_text, chat_history, is_offline=False)
     final_answer = append_verified_urls(answer, web_text)
+    
+    # Save the live knowledge locally
     save_knowledge_to_db(standalone_query, final_answer)
+    
     return final_answer
 
 def offline_rag(raw_query: str, chat_history: list) -> str:
     standalone_query = contextualize_user_query(raw_query, chat_history)
-    print("Searching document database...")
+    console.print("[dim] Searching document database...[/dim]")
     search_keywords = extract_search_keywords(standalone_query)
     docs = retriever.invoke(search_keywords)
     context = "\n\n".join(d.page_content for d in docs)
@@ -437,109 +468,236 @@ def offline_rag(raw_query: str, chat_history: list) -> str:
 
 def hybrid_rag(raw_query: str, chat_history: list) -> str:
     standalone_query = contextualize_user_query(raw_query, chat_history)
-    answer = offline_rag(raw_query, chat_history)
-
+    answer = offline_rag(raw_query, chat_history) 
+    
     if "information is missing" in answer.lower() or len(answer) < 20:
-        print("[!] Missing in database. Consulting live web...")
+        console.print("[dim yellow] [!] Missing in database. Consulting live web...[/dim yellow]")
         web_text = web_search(standalone_query)
         ai_answer = answer_with_llm(standalone_query, web_text, chat_history, is_offline=False)
         final_answer = append_verified_urls(ai_answer, web_text)
+        
+        # Save the fallback knowledge locally so it isn't missing next time
         save_knowledge_to_db(standalone_query, final_answer)
+        
         return final_answer
     return answer
 
 # =====================================================
-#  GRADIO WEB INTERFACE
+#  GRADIO WEB INTERFACE IMPLEMENTATION
 # =====================================================
-def process_chat(user_input, chat_history_state, mode):
-    if not user_input.strip():
+def launch_gradio():
+    """Starts the Gradio web interface."""
+    def process_chat_gradio(user_input, chat_history_state, mode):
+        if not user_input.strip():
+            return "", chat_history_state
+
+        formatted_history = []
+        if chat_history_state:
+            for user_msg, ai_msg in chat_history_state:
+                formatted_history.append((user_msg, ai_msg))
+
+        try:
+            intent = classify_query(user_input)
+            if intent == "image":
+                bot_response = handle_image_request(user_input, formatted_history)
+            elif intent == "video":
+                bot_response = handle_video_request(user_input, formatted_history)
+            elif intent == "translate":
+                bot_response = handle_translation(user_input)
+            else:
+                if mode == "Online Mode":
+                    bot_response = online_rag(user_input, formatted_history)
+                elif mode == "Offline Mode":
+                    bot_response = offline_rag(user_input, formatted_history)
+                else: 
+                    bot_response = hybrid_rag(user_input, formatted_history)
+        except Exception as e:
+            bot_response = f"**Error generating response:** {str(e)}"
+
+        chat_history_state.append((user_input, bot_response))
         return "", chat_history_state
 
-    formatted_history = []
-    if chat_history_state:
-        for user_msg, ai_msg in chat_history_state:
-            formatted_history.append((user_msg, ai_msg))
+    def process_file_upload_gradio(file):
+        if file is None:
+            return "No file uploaded."
+        try:
+            add_document_from_path(file.name)
+            return f"✅ Successfully indexed: {os.path.basename(file.name)}"
+        except Exception as e:
+            return f"❌ Error processing file: {str(e)}"
 
-    try:
-        intent = classify_query(user_input)
-        if intent == "image":
-            bot_response = handle_image_request(user_input, formatted_history)
-        elif intent == "video":
-            bot_response = handle_video_request(user_input, formatted_history)
-        elif intent == "translate":
-            bot_response = handle_translation(user_input)
-        else:
-            if mode == "Online Mode":
-                bot_response = online_rag(user_input, formatted_history)
-            elif mode == "Offline Mode":
-                bot_response = offline_rag(user_input, formatted_history)
-            else: 
-                bot_response = hybrid_rag(user_input, formatted_history)
-            
-    except Exception as e:
-        bot_response = f"**Error generating response:** {str(e)}"
-
-    chat_history_state.append((user_input, bot_response))
-    return "", chat_history_state
-
-def process_file_upload(file):
-    if file is None:
-        return "No file uploaded."
-    try:
-        add_document_from_path(file.name)
-        return f" Successfully processed and indexed: {os.path.basename(file.name)}"
-    except Exception as e:
-        return f"Error processing file: {str(e)}"
-
-with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("#  Adaptive Hybrid RAG Engine")
-    gr.Markdown("An intelligent, privacy-first assistant with local vector search and real-time web fallback.")
-    
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("### ⚙️ Settings")
-            mode_selector = gr.Radio(
-                choices=["Online Mode", "Offline Mode", "Hybrid Mode"],
-                value="Hybrid Mode",
-                label="Select AI Mode"
-            )
-            
-            gr.Markdown("###  Document Knowledge Base")
-            gr.Markdown("Upload PDFs, TXTs, or Images to teach the AI offline facts.")
-            file_uploader = gr.File(label="Upload Document")
-            upload_status = gr.Textbox(label="Upload Status", interactive=False)
-            
-            file_uploader.upload(
-                fn=process_file_upload, 
-                inputs=[file_uploader], 
-                outputs=[upload_status]
-            )
-
-        with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label="Conversation", height=500)
-            chat_state = gr.State([]) 
-            
-            with gr.Row():
-                msg_input = gr.Textbox(
-                    show_label=False,
-                    placeholder="Type your question here and press Enter...",
-                    scale=4
+    with gr.Blocks(theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 🧠 Adaptive Hybrid RAG Engine")
+        gr.Markdown("An intelligent, privacy-first assistant with local vector search and real-time web fallback.")
+        
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### ⚙️ Settings")
+                mode_selector = gr.Radio(
+                    choices=["Online Mode", "Offline Mode", "Hybrid Mode"],
+                    value="Hybrid Mode",
+                    label="Select AI Mode"
                 )
-                submit_btn = gr.Button("Send", variant="primary", scale=1)
+                
+                gr.Markdown("### 📁 Document Knowledge Base")
+                file_uploader = gr.File(label="Upload Document")
+                upload_status = gr.Textbox(label="Upload Status", interactive=False)
+                
+                file_uploader.upload(
+                    fn=process_file_upload_gradio, 
+                    inputs=[file_uploader], 
+                    outputs=[upload_status]
+                )
 
-            msg_input.submit(
-                fn=process_chat,
-                inputs=[msg_input, chat_state, mode_selector],
-                outputs=[msg_input, chatbot]
-            )
-            submit_btn.click(
-                fn=process_chat,
-                inputs=[msg_input, chat_state, mode_selector],
-                outputs=[msg_input, chatbot]
-            )
-            
-            clear_btn = gr.Button("Clear Conversation")
-            clear_btn.click(lambda: ([], []), None, [chatbot, chat_state], queue=False)
+            with gr.Column(scale=3):
+                chatbot = gr.Chatbot(label="Conversation", height=500)
+                chat_state = gr.State([]) 
+                
+                with gr.Row():
+                    msg_input = gr.Textbox(
+                        show_label=False,
+                        placeholder="Type your question here and press Enter...",
+                        scale=4
+                    )
+                    submit_btn = gr.Button("Send", variant="primary", scale=1)
 
-print("Starting Gradio server...")
-demo.launch(debug=True, share=True)
+                msg_input.submit(
+                    fn=process_chat_gradio,
+                    inputs=[msg_input, chat_state, mode_selector],
+                    outputs=[msg_input, chatbot]
+                )
+                submit_btn.click(
+                    fn=process_chat_gradio,
+                    inputs=[msg_input, chat_state, mode_selector],
+                    outputs=[msg_input, chatbot]
+                )
+                
+                clear_btn = gr.Button("Clear Conversation")
+                clear_btn.click(lambda: ([], []), None, [chatbot, chat_state], queue=False)
+
+    console.print("\n[bold green]Starting Gradio server...[/bold green]")
+    demo.launch(debug=True, share=True)
+
+# =====================================================
+#  MAIN EXECUTION LOOP (CLI OR GRADIO SELECTION)
+# =====================================================
+if __name__ == "__main__":
+    console.print("\n[bold green]✅ System Ready![/bold green]")
+    if not TAVILY_API_KEY:
+        console.print("[dim] (Tip: set TAVILY_API_KEY in your .env for much better real-time web search.)[/dim]")
+
+    # Prompt the user on how they want to run the application
+    console.print(Panel(
+        "[bold cyan]1[/bold cyan] - Run in Terminal (CLI Mode)\n"
+        "[bold cyan]2[/bold cyan] - Run in Browser (Gradio Web UI)", 
+        title="🚀 Select Application Interface", border_style="magenta", expand=False
+    ))
+    
+    interface_choice = input("Select interface (1/2): ").strip()
+    
+    if interface_choice == "2":
+        # Launch the Gradio Web UI
+        launch_gradio()
+    else:
+        # Run the standard CLI Loop
+        while True:
+            # Create a beautiful Welcome Panel
+            menu_text = (
+                "[bold cyan]1[/bold cyan] - Online Mode (Internet only)\n"
+                "[bold cyan]2[/bold cyan] - Offline Mode (Your Docs only)\n"
+                "[bold cyan]3[/bold cyan] - Hybrid Mode (Docs + Internet fallback)\n"
+                "[bold cyan]4[/bold cyan] - Exit"
+            )
+            console.print("\n")
+            console.print(Panel(menu_text, title="🧠 Choose Your AI Mode", border_style="cyan", expand=False))
+
+            mode = input("Select mode (1/2/3/4): ").strip()
+
+            if mode == "4":
+                console.print("\n[bold green]See you soon![/bold green]")
+                sys.exit(0)
+
+            if mode not in ("1", "2", "3"):
+                console.print("[bold red] Invalid selection. Please select 1, 2, 3, or 4.[/bold red]")
+                continue
+
+            mode_names = {
+                "1": "Online Mode (Internet)",
+                "2": "Offline Mode (Local Docs)",
+                "3": "Hybrid Mode (Docs + Internet Fallback)"
+            }
+            console.print(f"\n[bold magenta] >>> Switched to {mode_names[mode]}. Type 'exit' to change modes. <<< [/bold magenta]")
+
+            chat_history = []
+
+            while True:
+                # 1. Clear, styled Chat Prompt
+                console.print("\n[bold green]👤 You:[/bold green] ", end="")
+                user_input = input().strip()
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() == "exit":
+                    console.print("[yellow] Exiting current mode. Returning to main menu...[/yellow]")
+                    break
+
+                if user_input.lower().startswith("upload"):
+                    if mode == "1":
+                        console.print("[yellow] Note: You selected Online Mode (1). Uploaded docs won't be queried in this mode.[/yellow]")
+                    parts = user_input.split(" ", 1)
+                    if len(parts) < 2:
+                        console.print("[red] Please provide the file path. Example: upload C:\\docs\\resume.pdf[/red]")
+                        continue
+                    path = parts[1].strip().strip("\"'")
+                    if not os.path.exists(path):
+                        console.print(f"[red] File not found at: {path}[/red]")
+                        continue
+                    try:
+                        console.print(f"[blue] Extracting text from '{os.path.basename(path)}'...[/blue]")
+                        add_document_from_path(path)
+                        console.print("[bold green]✅ File successfully saved to the local database![/bold green]")
+                    except Exception as e:
+                        console.print(f"[red] Upload error: {e}[/red]")
+                    continue
+
+                intent = classify_query(user_input)
+
+                if intent == "image":
+                    result = handle_image_request(user_input, chat_history)
+                    console.print("\n")
+                    console.print(Panel(Markdown(result), title="🖼️ Image Search", border_style="cyan", expand=False))
+                    continue
+                elif intent == "video":
+                    result = handle_video_request(user_input, chat_history)
+                    console.print("\n")
+                    console.print(Panel(Markdown(result), title="📺 Video Search", border_style="cyan", expand=False))
+                    continue
+                elif intent == "translate":
+                    result = handle_translation(user_input)
+                    console.print("\n")
+                    console.print(Panel(Markdown(result), title="🌐 Translation", border_style="cyan", expand=False))
+                    continue
+
+                try:
+                    # 2. Add an animated Loading Spinner while generating
+                    with console.status("[bold cyan]🤖 AI is thinking...[/bold cyan]", spinner="dots"):
+                        if mode == "1":
+                            final_answer = online_rag(user_input, chat_history)
+                        elif mode == "2":
+                            final_answer = offline_rag(user_input, chat_history)
+                        else:
+                            final_answer = hybrid_rag(user_input, chat_history)
+
+                    # --- RICH UI FORMATTING ---
+                    console.print("\n")
+                    formatted_answer = Markdown(final_answer)
+                    
+                    # 3. Present the answer in a beautiful Panel box
+                    console.print(Panel(formatted_answer, title="🤖 AI Assistant", border_style="cyan", expand=False))
+                    
+                    # Append to history so context can be carried over correctly on the next turn
+                    chat_history.append((user_input, final_answer))
+
+                except Exception as e:
+                    console.print(f"\n[bold red] Error generating answer: {e}[/bold red]\n")
