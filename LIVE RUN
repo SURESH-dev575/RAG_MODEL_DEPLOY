@@ -1,12 +1,12 @@
-!pip install deep-translator duckduckgo-search rich
-!pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
-!pip install "transformers<5.0"
-!pip install --upgrade pillow transformers
-!pip install -U ddgs
-!pip install tavily-python
-!pip install langchain langchain_community langchain_chroma
-!pip install --upgrade pillow
-!pip install --upgrade "pillow<11.0.0"
+# !pip install deep-translator duckduckgo-search rich
+# !pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
+# !pip install "transformers<5.0"
+# !pip install --upgrade pillow transformers
+# !pip install -U ddgs
+# !pip install tavily-python
+# !pip install langchain langchain_community langchain_chroma
+# !pip install --upgrade pillow
+# !pip install --upgrade "pillow<11.0.0"
 
 import os
 import re
@@ -62,7 +62,7 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 console.print("\n[bold cyan]" + "━" * 50 + "[/bold cyan]")
-console.print(f"[bold white]   HARDWARE DETECTED: {device.upper()} [/bold white]", justify="center")
+console.print(f"[bold white]  HARDWARE DETECTED: {device.upper()} [/bold white]", justify="center")
 console.print("[bold cyan]" + "━" * 50 + "[/bold cyan]\n")
 
 # ---------------------
@@ -237,7 +237,7 @@ def handle_video_request(query: str, chat_history: list) -> str:
 
     try:
         webbrowser.open(search_url)
-        return f"📺 Opened YouTube videos for '{subject}' directly in your web browser.\nLink: {search_url}"
+        return f" Opened YouTube videos for '{subject}' directly in your web browser.\nLink: {search_url}"
     except Exception as e:
         return f"Failed to open browser: {e}\nHere is the link: {search_url}"
 
@@ -362,10 +362,8 @@ def append_verified_urls(answer: str, web_text: str) -> str:
     unique_urls = [u for u in urls if not (u in seen or seen.add(u))]
 
     if unique_urls:
-        answer += "\n\n** Verified Web Links:**\n"
+        answer += "\n\n**Verified Web Links:**\n"
         for u in unique_urls:
-            # FIX: Use standard Markdown link formatting. 
-            # Rich will automatically turn this into a clickable terminal hyperlink.
             answer += f"- [{u}]({u})\n"
     return answer
 
@@ -397,6 +395,21 @@ def add_document_from_path(path):
         raise ValueError("No text extracted from file.")
     chunks = splitter.create_documents([text])
     vectorDB.add_documents(chunks)
+
+# =====================================================
+#  SELF-LEARNING MEMORY INJECTION
+# =====================================================
+def save_knowledge_to_db(query: str, answer: str):
+    try:
+        today_str = date.today().strftime("%B %d, %Y")
+        memory_text = f"Learned Fact (Date: {today_str})\nUser Question: {query}\nVerified Answer: {answer}"
+        
+        chunks = splitter.create_documents([memory_text])
+        vectorDB.add_documents(chunks)
+        
+        console.print("[dim green] [Self-Learning] Saved this new knowledge to the local database![/dim green]")
+    except Exception as e:
+        console.print(f"[dim red] Failed to save memory: {e}[/dim red]")
 
 # =====================================================
 #  CORE GENERATION LOGIC
@@ -434,9 +447,15 @@ def online_rag(raw_query: str, chat_history: list) -> str:
     standalone_query = contextualize_user_query(raw_query, chat_history)
     msg = " Searching the web (Tavily)..." if (TAVILY_AVAILABLE and TAVILY_API_KEY) else " Searching the web (DuckDuckGo fallback)..."
     console.print(f"[dim]{msg}[/dim]")
+    
     web_text = web_search(standalone_query)
     answer = answer_with_llm(standalone_query, web_text, chat_history, is_offline=False)
-    return append_verified_urls(answer, web_text)
+    final_answer = append_verified_urls(answer, web_text)
+    
+    # Save the live knowledge locally
+    save_knowledge_to_db(standalone_query, final_answer)
+    
+    return final_answer
 
 def offline_rag(raw_query: str, chat_history: list) -> str:
     standalone_query = contextualize_user_query(raw_query, chat_history)
@@ -454,7 +473,12 @@ def hybrid_rag(raw_query: str, chat_history: list) -> str:
         console.print("[dim yellow] [!] Missing in database. Consulting live web...[/dim yellow]")
         web_text = web_search(standalone_query)
         ai_answer = answer_with_llm(standalone_query, web_text, chat_history, is_offline=False)
-        return append_verified_urls(ai_answer, web_text)
+        final_answer = append_verified_urls(ai_answer, web_text)
+        
+        # Save the fallback knowledge locally so it isn't missing next time
+        save_knowledge_to_db(standalone_query, final_answer)
+        
+        return final_answer
     return answer
 
 # =====================================================
@@ -497,7 +521,7 @@ if __name__ == "__main__":
 
         while True:
             # 1. Clear, styled Chat Prompt
-            console.print("\n[bold green] You:[/bold green] ", end="")
+            console.print("\n[bold green You:[/bold green] ", end="")
             user_input = input().strip()
 
             if not user_input:
