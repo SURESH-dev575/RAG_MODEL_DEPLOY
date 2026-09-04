@@ -116,7 +116,13 @@ body {
 }
 
 .msg.you .avatar { background-color: var(--accent); color: white; }
-.message-content { flex: 1; font-size: 0.95rem; }
+.message-content { 
+    flex: 1; 
+    font-size: 0.95rem; 
+    white-space: pre-wrap; 
+    overflow-x: auto;
+    font-family: inherit;
+}
 
 /* Input Area Styling */
 .input-area {
@@ -164,5 +170,27 @@ body {
 
 .send-btn:hover { background: var(--accent-hover); }
 
-/* Typing indicator animation */
 .typing-indicator { color: var(--text-muted); font-style: italic; }
+
+/* Mode Selector Styling */
+.mode-selector {
+    max-width: 800px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+}
+
+#ai-mode {
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    outline: none;
+    cursor: pointer;
+}
+
+#ai-mode:focus {
+    border-color: var(--accent);
+}
