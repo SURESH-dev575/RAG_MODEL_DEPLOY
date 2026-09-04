@@ -38,7 +38,15 @@
             </div>
             
             <div class="input-area">
-                <div class="input-wrapper">
+                <div class="mode-selector">
+                    <label for="ai-mode" style="font-size: 0.85rem; color: var(--text-muted); margin-right: 10px;">Select AI Mode:</label>
+                    <select id="ai-mode">
+                        <option value="offline">Offline RAG (Uploaded Docs Only)</option>
+                        <option value="internet">Internet Search Only</option>
+                        <option value="hybrid" selected>Hybrid (Search Docs, then Internet)</option>
+                    </select>
+                </div>
+                <div class="input-wrapper" style="margin-top: 10px;">
                     <input type="text" id="user-input" placeholder="Message AI Copilot..." autocomplete="off">
                     <button id="send-btn" class="send-btn">
                         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" height="20px" width="20px" xmlns="http://www.w3.org/2000/svg"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
