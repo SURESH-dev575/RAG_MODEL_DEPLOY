@@ -1,3 +1,5 @@
+COLAB LINK: https://colab.research.google.com/drive/1djAR3LXsJNKP_JNw2_Fppae3Nh3SP4y4#scrollTo=JmjYBql2TJX0
+
 # !pip install deep-translator duckduckgo-search rich gradio
 # !pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
 # !pip install "transformers<5.0"
