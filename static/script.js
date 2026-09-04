@@ -35,27 +35,28 @@ async function sendQuestion() {
     const loadingId = "loading-" + Date.now();
     appendMessage("Bot", '<span class="typing-indicator">Thinking (this may take a minute on the first run)...</span>', loadingId);
 
+    // Grab the selected mode safely
+    const modeElement = document.getElementById("ai-mode");
+    const mode = modeElement ? modeElement.value : "hybrid";
+
     try {
         const resp = await fetch("/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question }),
+            body: JSON.stringify({ question: question, mode: mode }),
         });
 
         // Remove loading message
         document.getElementById(loadingId).remove();
 
-        // FIX FOR THE JSON ERROR: Read as text first to check if Render sent an HTML timeout page
         const textResponse = await resp.text();
         
         try {
-            // Try to parse it as JSON
             const data = JSON.parse(textResponse);
             appendMessage("Bot", data.answer);
         } catch (jsonError) {
-            // If it fails to parse, Render likely timed out or crashed
             console.error("Server HTML Response:", textResponse);
-            appendMessage("Bot", "⚠️ **Server Error:** The AI took too long to load or ran out of memory on the free tier. Try asking again in a few seconds once it wakes up.");
+            appendMessage("Bot", "⚠️ **Server Error:** The AI took too long to load or crashed.");
         }
 
     } catch (err) {
