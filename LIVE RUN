@@ -1,22 +1,19 @@
-# MAIN AI PROJECT
-
-!pip install tavily-python
-!pip install langchain langchain_community langchain_chroma
-!pip install tavily-python
-!pip install langchain langchain_community langchain_chroma
-
+!pip install deep-translator duckduckgo-search rich
 !pip install pdfplumber python-docx pytesseract Pillow transformers langchain langchain-community langchain-core langchain-huggingface sentence-transformers chromadb python-dotenv tavily-python torch
 !pip install "transformers<5.0"
 !pip install --upgrade pillow transformers
 !pip install -U ddgs
-
-
-pip install --upgrade "pillow<11.0.0"
-
-
-# RTX 3050
+!pip install tavily-python
+!pip install langchain langchain_community langchain_chroma
+!pip install --upgrade pillow
+!pip install --upgrade "pillow<11.0.0"
 
 import os
+import re
+import sys
+import webbrowser
+from datetime import date
+
 import pdfplumber
 import docx
 import pytesseract
@@ -26,248 +23,546 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers.string import StrOutputParser
-from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 from dotenv import load_dotenv
 
+# --- RICH UI IMPORTS ---
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt
+
+# Initialize the rich console
+console = Console()
+# -----------------------
+
+# Import the free translation library
+try:
+    from deep_translator import GoogleTranslator
+except ImportError:
+    console.print("[bold red][!] Please run: pip install deep-translator[/bold red]")
+    sys.exit(1)
+
+try:
+    from tavily import TavilyClient
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
+
 # ---------------------
-# Configuration
+# Configuration & Hardware
 # ---------------------
 load_dotenv()
 
-# Smarter 1.5B Model (Fits perfectly in RTX 3050 VRAM)
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
-EMBEDDING_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
-# ---------------------
-# Hardware Acceleration Check (RTX 3050)
-# ---------------------
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print("\n" + "="*50)
-print(f" HARDWARE DETECTED: {device.upper()}")
-if device == "cuda":
-    print(f" GPU ACTIVE: Utilizing NVIDIA CUDA Cores")
-else:
-    print(" WARNING: Running on CPU. This will be very slow.")
-print("="*50 + "\n")
+console.print("\n[bold cyan]" + "━" * 50 + "[/bold cyan]")
+console.print(f"[bold white]   HARDWARE DETECTED: {device.upper()} [/bold white]", justify="center")
+console.print("[bold cyan]" + "━" * 50 + "[/bold cyan]\n")
 
 # ---------------------
-# Text splitter & vector DB
+# Text Splitter & Vector Store
 # ---------------------
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=600,  # Slightly smaller chunks for higher precision
-    chunk_overlap=150,
-    separators=["\n\n", "\n", " ", ""]
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=600, chunk_overlap=150, separators=["\n\n", "\n", " ", ""]
 )
 
-# Load embeddings directly into GPU memory
-embedding_model = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL,
-    model_kwargs={'device': device}
+emb = HuggingFaceEmbeddings(model_name=EMBED_MODEL, model_kwargs={"device": device})
+vectorDB = Chroma(collection_name="rag_docs", embedding_function=emb, persist_directory="chroma_store")
+retriever = vectorDB.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_k": 6})
+
+# ---------------------
+# LLM Setup & Generation Config Fix
+# ---------------------
+with console.status("[bold yellow]Loading AI Brain (this takes a moment)...[/bold yellow]", spinner="dots"):
+    tok = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        device_map="auto" if device == "cuda" else None,
+    )
+
+    if hasattr(model.generation_config, "max_length"):
+        model.generation_config.max_length = None
+    if hasattr(model.config, "max_length"):
+        model.config.max_length = None
+
+    model.generation_config.max_new_tokens = 768
+
+    gen = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tok,
+        max_new_tokens=768,
+        max_length=None,
+        return_full_text=False,
+        do_sample=False,
+        temperature=0.0,
+        repetition_penalty=1.15,
+    )
+    llm = HuggingFacePipeline(pipeline=gen)
+
+# =====================================================
+#  INTENT DETECTION & KEYWORD OPTIMIZATION
+# =====================================================
+IMAGE_KEYWORDS = [
+    "image", "images", "photo", "photos", "picture", "pictures",
+    "pic", "pics", "wallpaper", "show me an image", "show me photos"
+]
+VIDEO_KEYWORDS = [
+    "video", "videos", "clip", "clips", "watch", "youtube",
+    "documentary", "footage", "tutorial video"
+]
+SUMMARY_KEYWORDS = [
+    "summarize", "summary", "brief overview", "key points", "tldr",
+    "recap", "synopsis", "outline the main points"
+]
+CODE_KEYWORDS = [
+    "code", "program", "function", "algorithm", "leetcode", "leet code",
+    "class ", "implement", "script", "compile", "syntax", "debug", "bug",
+    "python", "java", "javascript", "typescript", "c++", "c#", "sql",
+    "html", "css", "react", "node", "regex", "api", "loop", "recursion",
+    "array", "linked list", "sort", "data structure", "compiler",
+    "write a program", "write code", "fix this code", "stack trace",
+]
+TRANSLATE_KEYWORDS = [
+    "translate", "transulate", "translation", "meaning in",
+    "in telugu", "in hindi", "to telugu", "to hindi", "to english", "in english"
+]
+TIME_SENSITIVE_KEYWORDS = [
+    "today", "current", "currently", "now", "latest", "right now",
+    "this week", "this month", "net worth", "stock price", "share price",
+    "exchange rate", "weather", "score", "live", "up to date", "as of",
+]
+
+def extract_search_keywords(query: str) -> str:
+    filler_patterns = [
+        r"\b(please|can you|could you|tell me|what is|who is|give me|provide)\b",
+        r"\b(show me|search for|look up|find out|i want to know about)\b",
+        r"\b(images? of|photos? of|pictures? of|videos? of|clips? of)\b",
+        r"\b(links about|link for|links for|provide link)\b",
+        r"\b(create an|create a)\b"
+    ]
+    cleaned = query.strip()
+    for pattern in filler_patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^\w\s]", " ", cleaned)
+    keywords = " ".join(cleaned.split())
+    return keywords if keywords else query.strip()
+
+def classify_query(query: str) -> str:
+    q = query.lower()
+    if any(re.search(rf"\b{re.escape(kw)}\b", q) for kw in IMAGE_KEYWORDS): return "image"
+    if any(re.search(rf"\b{re.escape(kw)}\b", q) for kw in VIDEO_KEYWORDS): return "video"
+    if any(re.search(rf"\b{re.escape(kw)}\b", q) for kw in SUMMARY_KEYWORDS): return "summary"
+    if any(kw in q for kw in TRANSLATE_KEYWORDS): return "translate"
+    if any(kw in q for kw in CODE_KEYWORDS): return "code"
+    return "general"
+
+def is_time_sensitive(query: str) -> bool:
+    q = query.lower()
+    return any(kw in q for kw in TIME_SENSITIVE_KEYWORDS)
+
+def format_history_for_prompt(history: list) -> str:
+    if not history:
+        return "No prior conversation context."
+    formatted = []
+    for q, a in history[-3:]:
+        short_a = a if len(a) < 150 else a[:150] + "..."
+        formatted.append(f"User: {q}\nAI: {short_a}")
+    return "\n\n".join(formatted)
+
+# =====================================================
+#  CONTEXT REFORMULATION PIPELINE
+# =====================================================
+rewrite_prompt = PromptTemplate.from_template(
+    "Given the following conversation history and a new user question, "
+    "rephrase the new question to be a standalone question that contains all necessary context. "
+    "Do NOT answer the question, just reformulate it.\n"
+    "If the new question is already clear, output it exactly as it is.\n\n"
+    "Chat History:\n{history}\n\n"
+    "New Question: {question}\n\n"
+    "Standalone Question:"
 )
 
-vectorDB = Chroma(collection_name="rag_docs", embedding_function=embedding_model, persist_directory="chroma_store")
+def contextualize_user_query(query: str, chat_history: list) -> str:
+    if not chat_history:
+        return query
+        
+    console.print("[dim] [*] Analyzing conversation context...[/dim]")
+    formatted_hist = format_history_for_prompt(chat_history)
+    
+    standalone_query = llm.invoke(
+        rewrite_prompt.format(history=formatted_hist, question=query)
+    ).strip().strip('"').strip("'")
+    
+    if "\n" in standalone_query:
+        standalone_query = standalone_query.split("\n")[0].strip()
+        
+    if not standalone_query:
+        return query
+        
+    console.print(f"[dim] [Memory] Rewrote Question To: '{standalone_query}'[/dim]")
+    return standalone_query
 
-#  UPGRADE 1: MMR (Maximum Marginal Relevance) for higher DB accuracy
-retriever = vectorDB.as_retriever(
-    search_type="mmr",
-    search_kwargs={"k": 3, "fetch_k": 6} # Fetches 6, picks the best 3 unique chunks
+# =====================================================
+#  MEDIA AND TRANSLATION HANDLERS
+# =====================================================
+def handle_image_request(query: str, chat_history: list) -> str:
+    standalone = contextualize_user_query(query, chat_history)
+    subject = extract_search_keywords(standalone)
+    console.print(f"[dim] [*] Opening Google Images for: '{subject}'...[/dim]")
+
+    encoded = subject.replace(" ", "+")
+    search_url = f"https://www.google.com/search?tbm=isch&q={encoded}"
+
+    try:
+        webbrowser.open(search_url)
+        return f" Opened Google Images for '{subject}' directly in your web browser.\nLink: {search_url}"
+    except Exception as e:
+        return f"Failed to open browser: {e}\nHere is the link: {search_url}"
+
+def handle_video_request(query: str, chat_history: list) -> str:
+    standalone = contextualize_user_query(query, chat_history)
+    subject = extract_search_keywords(standalone)
+    console.print(f"[dim] [*] Opening YouTube for: '{subject}'...[/dim]")
+
+    encoded = subject.replace(" ", "+")
+    search_url = f"https://www.youtube.com/results?search_query={encoded}"
+
+    try:
+        webbrowser.open(search_url)
+        return f"📺 Opened YouTube videos for '{subject}' directly in your web browser.\nLink: {search_url}"
+    except Exception as e:
+        return f"Failed to open browser: {e}\nHere is the link: {search_url}"
+
+def handle_translation(query: str) -> str:
+    console.print("[dim] [*] Connecting to translation services...[/dim]")
+    query_lower = query.lower()
+    lang_map = {
+        "telugu": "te", "hindi": "hi", "spanish": "es", "french": "fr",
+        "german": "de", "japanese": "ja", "chinese": "zh-CN", "english": "en"
+    }
+    target_lang = "te"
+    for lang_name, lang_code in lang_map.items():
+        if lang_name in query_lower:
+            target_lang = lang_code
+            break
+
+    quoted_text = re.findall(r'"([^"]*)"|\'([^\']*)\'', query)
+    if quoted_text:
+        extracted = next((item for sublist in quoted_text for item in sublist if item), None)
+        text_to_translate = extracted.strip() if extracted else ""
+    else:
+        remove_words = [
+            "translate", "transulate", "translation", "meaning",
+            "in", "to", "on", "into", "word", "phrase", "say", "write"
+        ] + list(lang_map.keys())
+        words = query.split()
+        cleaned_words = [w for w in words if w.lower() not in remove_words]
+        text_to_translate = " ".join(cleaned_words).strip()
+
+    if not text_to_translate:
+        return "Please provide the text you want to translate.\n(Tip: Put the text in quotes)"
+
+    try:
+        translated_text = GoogleTranslator(source='auto', target=target_lang).translate(text_to_translate)
+        return f"Translated '{text_to_translate}' to {target_lang.upper()}:\n\n**{translated_text}**"
+    except Exception as e:
+        return f"Translation failed: {e}"
+
+# =====================================================
+#  PROMPT TEMPLATES
+# =====================================================
+offline_prompt = PromptTemplate.from_template(
+    "You are a strict data extraction assistant. \n"
+    "Conversation History:\n{history}\n\n"
+    "Use ONLY the context below to answer the question exactly as it appears in the text. "
+    "Be brief. DO NOT generate follow-up questions.\n\n"
+    "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
 )
 
-# ---------------------
-# LLM setup (OPTIMIZED FOR RTX 3050)
-# ---------------------
-print(" Loading AI Brain (this takes a moment)...")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-# Force Float16 precision for massive speed boost and lower VRAM usage
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    device_map="auto" if device == "cuda" else None
+general_prompt = PromptTemplate.from_template(
+    "Today's real date is {today}. Treat this as the current date.\n"
+    "Conversation History:\n{history}\n\n"
+    "You are a factual AI assistant. Answer using ONLY the provided web notes.\n"
+    "CRITICAL RULES:\n"
+    "1. Keep your answer brief and strictly to the point.\n"
+    "2. DO NOT write URLs in the text (they will be appended automatically).\n"
+    "3. STOP generating text once the answer is complete. DO NOT simulate a conversation.\n\n"
+    "Web notes:\n{context}\n\nQuestion: {question}\nAnswer:"
 )
 
-#  UPGRADE 2: Added temperature=0.0 for maximum reliability (no hallucinations)
-generator = pipeline(
-    "text-generation",
-    model=model,
-    tokenizer=tokenizer,
-    max_new_tokens=256,
-    return_full_text=False,
-    do_sample=False,
-    temperature=0.0
-)
-llm = HuggingFacePipeline(pipeline=generator)
-
-# ---------------------
-# Prompt / RAG chains
-# ---------------------
-prompt_template = PromptTemplate.from_template("""
-You are a highly accurate data extraction assistant. Use the following context to answer the question exactly as it appears in the text.
-Extract all relevant details. If the context does not contain the answer, state "Information is missing." Do not guess.
-
-Context:
-{context}
-
-Question: {question}
-Answer:
-""")
-
-rag_chain = (
-    {"context": retriever, "question": RunnablePassthrough()}
-    | prompt_template
-    | llm
-    | StrOutputParser()
+summary_prompt = PromptTemplate.from_template(
+    "Today's date is {today}.\n"
+    "Conversation History:\n{history}\n\n"
+    "Task: Provide a short executive summary and key bullet points based ONLY on the context below. DO NOT simulate a conversation.\n"
+    "Context:\n{context}\n\nSubject to Summarize: {question}\nSummary:"
 )
 
-# 100% Free Web Search
-search_tool = DuckDuckGoSearchRun()
+code_prompt = PromptTemplate.from_template(
+    "Today's date is {today}.\n"
+    "Conversation History:\n{history}\n\n"
+    "Answer with exactly ONE clean code block. DO NOT simulate a conversation.\n"
+    "Reference notes:\n{context}\n\nQuestion: {question}\nAnswer:"
+)
 
-# ---------------------
-# File text extraction
-# ---------------------
+# =====================================================
+#  WEB SEARCH & URL EXTRACTOR
+# =====================================================
+def web_search(query: str, max_results: int = 5) -> str:
+    today_str = date.today().strftime("%B %d, %Y")
+    search_query = query
+
+    if is_time_sensitive(query):
+        search_query = f"{search_query} {today_str}"
+
+    if TAVILY_AVAILABLE and TAVILY_API_KEY:
+        try:
+            client = TavilyClient(api_key=TAVILY_API_KEY)
+            kwargs = dict(max_results=max_results, search_depth="advanced", include_answer=True)
+            if is_time_sensitive(query):
+                kwargs["topic"] = "news"
+                kwargs["days"] = 7
+            res = client.search(search_query, **kwargs)
+
+            chunks = [f"(Search run on: {today_str})"]
+            if res.get("answer"):
+                chunks.append(f"Quick answer: {res['answer']}")
+            for r in res.get("results", []):
+                title = r.get("title", "")
+                content = r.get("content", "")
+                url = r.get("url", "")
+                chunks.append(f"Source: {title} (URL: {url})\n{content}")
+            return "\n\n".join(chunks) if len(chunks) > 1 else "No web results found."
+        except Exception as e:
+            console.print(f"[dim red] Tavily search failed ({e}), falling back to DuckDuckGo...[/dim red]")
+
+    try:
+        from langchain_community.tools import DuckDuckGoSearchResults
+        ddg = DuckDuckGoSearchResults(num_results=max_results, output_format="list")
+        results = ddg.invoke(search_query)
+        if not results:
+            return "No web results found."
+        header = f"(Search run on: {today_str})"
+        return header + "\n\n" + "\n\n".join(
+            f"{r.get('title', '')}: {r.get('snippet', '')} (URL: {r.get('link', '')})" for r in results
+        )
+    except Exception as e:
+        return f"Web search failed: {e}"
+
+def append_verified_urls(answer: str, web_text: str) -> str:
+    urls = re.findall(r'\(URL:\s*(https?://[^\s\)]+)\)', web_text)
+    seen = set()
+    unique_urls = [u for u in urls if not (u in seen or seen.add(u))]
+
+    if unique_urls:
+        answer += "\n\n** Verified Web Links:**\n"
+        for u in unique_urls:
+            # FIX: Use standard Markdown link formatting. 
+            # Rich will automatically turn this into a clickable terminal hyperlink.
+            answer += f"- [{u}]({u})\n"
+    return answer
+
+# =====================================================
+#  FILE TEXT EXTRACTION
+# =====================================================
 def extract_text_from_file(path):
     _, ext = os.path.splitext(path.lower())
     ext = ext.strip(".")
     if ext in ("txt", "md", "py", "java", "cpp", "c", "js", "ts", "html", "css", "json"):
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
-    elif ext == "pdf":
+    if ext == "pdf":
         texts = []
         with pdfplumber.open(path) as pdf:
             for p in pdf.pages:
-                page_text = p.extract_text() or ""
-                texts.append(page_text)
+                texts.append(p.extract_text() or "")
         return "\n".join(texts)
-    elif ext == "docx":
+    if ext == "docx":
         doc = docx.Document(path)
-        return "\n".join([p.text for p in doc.paragraphs])
-    elif ext in ("png", "jpg", "jpeg"):
-        img = Image.open(path)
-        return pytesseract.image_to_string(img)
-    else:
-        raise ValueError(f"Unsupported file type: {ext}")
+        return "\n".join(p.text for p in doc.paragraphs)
+    if ext in ("png", "jpg", "jpeg"):
+        return pytesseract.image_to_string(Image.open(path))
+    raise ValueError(f"Unsupported file type: {ext}")
 
 def add_document_from_path(path):
     text = extract_text_from_file(path)
-    if not text or len(text.strip()) == 0:
+    if not text or not text.strip():
         raise ValueError("No text extracted from file.")
-    chunks = text_splitter.create_documents([text])
+    chunks = splitter.create_documents([text])
     vectorDB.add_documents(chunks)
-    global retriever
-    retriever = vectorDB.as_retriever(search_type="mmr", search_kwargs={"k": 3, "fetch_k": 6})
 
-# ---------------------
-# Core RAG Logic Functions
-# ---------------------
-def online_rag(query):
-    print(" Searching DuckDuckGo...")
-    try:
-        web_text = search_tool.invoke(query)
-        if not web_text:
-            return " Sorry, I couldn't find an answer on the web."
+# =====================================================
+#  CORE GENERATION LOGIC
+# =====================================================
+def answer_with_llm(query: str, context: str, chat_history: list, is_offline: bool = False) -> str:
+    intent = classify_query(query)
 
-        prompt = prompt_template.format(context=web_text, question=query)
-        return llm.invoke(prompt).strip()
-    except Exception as e:
-        return f" Web search failed: {e}"
+    if intent == "summary":
+        template = summary_prompt
+    elif intent == "code":
+        template = code_prompt
+    elif is_offline:
+        template = offline_prompt
+    else:
+        template = general_prompt
 
-def offline_rag(query):
-    return rag_chain.invoke(query).strip()
+    today_str = date.today().strftime("%B %d, %Y")
+    formatted_hist = format_history_for_prompt(chat_history)
 
-def hybrid_rag(query):
-    answer = rag_chain.invoke(query).strip()
+    raw_answer = llm.invoke(template.format(
+        context=context,
+        question=query,
+        today=today_str,
+        history=formatted_hist
+    )).strip()
 
-    if "information is missing" in answer.lower() or len(answer) < 15:
-        print(" Answer not in database. Consulting DuckDuckGo...")
-        try:
-            web_text = search_tool.invoke(query)
-            if not web_text:
-                return " Sorry, I couldn't find an answer locally or on the web."
+    stop_phrases = ["\nUser:", "User:", "\nQuestion:", "\nAI:"]
+    for phrase in stop_phrases:
+        if phrase in raw_answer:
+            raw_answer = raw_answer.split(phrase)[0].strip()
 
-            #  UPGRADE 3: Bypass DB saving to massively reduce latency
-            prompt = prompt_template.format(context=web_text, question=query)
-            return llm.invoke(prompt).strip()
+    return raw_answer
 
-        except Exception as e:
-            print(f" Web search error: {e}")
+def online_rag(raw_query: str, chat_history: list) -> str:
+    standalone_query = contextualize_user_query(raw_query, chat_history)
+    msg = " Searching the web (Tavily)..." if (TAVILY_AVAILABLE and TAVILY_API_KEY) else " Searching the web (DuckDuckGo fallback)..."
+    console.print(f"[dim]{msg}[/dim]")
+    web_text = web_search(standalone_query)
+    answer = answer_with_llm(standalone_query, web_text, chat_history, is_offline=False)
+    return append_verified_urls(answer, web_text)
 
+def offline_rag(raw_query: str, chat_history: list) -> str:
+    standalone_query = contextualize_user_query(raw_query, chat_history)
+    console.print("[dim] Searching document database...[/dim]")
+    search_keywords = extract_search_keywords(standalone_query)
+    docs = retriever.invoke(search_keywords)
+    context = "\n\n".join(d.page_content for d in docs)
+    return answer_with_llm(standalone_query, context, chat_history, is_offline=True)
+
+def hybrid_rag(raw_query: str, chat_history: list) -> str:
+    standalone_query = contextualize_user_query(raw_query, chat_history)
+    answer = offline_rag(raw_query, chat_history) 
+    
+    if "information is missing" in answer.lower() or len(answer) < 20:
+        console.print("[dim yellow] [!] Missing in database. Consulting live web...[/dim yellow]")
+        web_text = web_search(standalone_query)
+        ai_answer = answer_with_llm(standalone_query, web_text, chat_history, is_offline=False)
+        return append_verified_urls(ai_answer, web_text)
     return answer
-# ---------------------
-# Main Execution Loop (CLI)
-# ---------------------
+
+# =====================================================
+#  MAIN EXECUTION LOOP (CLI)
+# =====================================================
 if __name__ == "__main__":
-    print("\n System Ready!")
+    console.print("\n[bold green] System Ready![/bold green]")
+    if not TAVILY_API_KEY:
+        console.print("[dim] (Tip: set TAVILY_API_KEY in your .env for much better real-time web search.)[/dim]")
 
     while True:
-        # 1. Print the menu INSIDE the loop so it shows every time
-        print("\n==================================")
-        print("  Choose Your AI Mode:")
-        print(" 1 - Online Mode (Internet only)")
-        print(" 2 - Offline Mode (Your Docs only)")
-        print(" 3 - Hybrid Mode (Docs + Internet fallback)")
-        print(" 4 - Exit")
-        print("==================================")
+        # Create a beautiful Welcome Panel
+        menu_text = (
+            "[bold cyan]1[/bold cyan] - Online Mode (Internet only)\n"
+            "[bold cyan]2[/bold cyan] - Offline Mode (Your Docs only)\n"
+            "[bold cyan]3[/bold cyan] - Hybrid Mode (Docs + Internet fallback)\n"
+            "[bold cyan]4[/bold cyan] - Exit"
+        )
+        console.print("\n")
+        console.print(Panel(menu_text, title=" Choose Your AI Mode", border_style="cyan", expand=False))
 
         mode = input("Select mode (1/2/3/4): ").strip()
 
-        # 2. Handle the Exit option first
         if mode == "4":
-            print("Goodbye!")
-            break
+            console.print("\n[bold green]See you soon![/bold green]")
+            sys.exit(0)
 
-        if mode not in ["1", "2", "3"]:
-            print(" Invalid selection. Please select 1, 2, 3, or 4.")
+        if mode not in ("1", "2", "3"):
+            console.print("[bold red] Invalid selection. Please select 1, 2, 3, or 4.[/bold red]")
             continue
 
-        # 3. Ask for the question or upload command
-        user_input = input("\n Your Question (or 'upload <path>'): ").strip()
+        mode_names = {
+            "1": "Online Mode (Internet)",
+            "2": "Offline Mode (Local Docs)",
+            "3": "Hybrid Mode (Docs + Internet Fallback)"
+        }
+        console.print(f"\n[bold magenta] >>> Switched to {mode_names[mode]}. Type 'exit' to change modes. <<< [/bold magenta]")
 
-        if not user_input:
-            continue
+        chat_history = []
 
-        # Optional: Keep "exit" here as well just in case you type it by habit
-        if user_input.lower() == "exit":
-            print("Goodbye!")
-            break
+        while True:
+            # 1. Clear, styled Chat Prompt
+            console.print("\n[bold green] You:[/bold green] ", end="")
+            user_input = input().strip()
 
-        # UNIVERSAL LOCAL UPLOAD LOGIC
-        if user_input.lower().startswith("upload"):
-            if mode == "1":
-                print(" Note: You selected Online Mode (1). Uploaded docs won't be searched for this query.")
-
-            parts = user_input.split(" ", 1)
-            if len(parts) < 2:
-                print(" Please provide the file path. Example: upload C:\\Users\\Name\\resume.pdf")
+            if not user_input:
                 continue
 
-            path = parts[1].strip().strip("\"'")
+            if user_input.lower() == "exit":
+                console.print("[yellow] Exiting current mode. Returning to main menu...[/yellow]")
+                break
 
-            if not os.path.exists(path):
-                print(f" File not found at: {path}")
-                continue
-
-            try:
-                print(f" Extracting text from '{os.path.basename(path)}'...")
-                add_document_from_path(path)
-                print(f" File successfully saved to the local database!")
-            except Exception as e:
-                print(f" Upload error: {e}")
-            continue
-
-        else:
-            try:
+            if user_input.lower().startswith("upload"):
                 if mode == "1":
-                    final_answer = online_rag(user_input)
-                elif mode == "2":
-                    print(f" Searching document database...")
-                    final_answer = offline_rag(user_input)
-                elif mode == "3":
-                    print(f" Searching document database...")
-                    final_answer = hybrid_rag(user_input)
+                    console.print("[yellow] Note: You selected Online Mode (1). Uploaded docs won't be queried in this mode.[/yellow]")
+                parts = user_input.split(" ", 1)
+                if len(parts) < 2:
+                    console.print("[red] Please provide the file path. Example: upload C:\\docs\\resume.pdf[/red]")
+                    continue
+                path = parts[1].strip().strip("\"'")
+                if not os.path.exists(path):
+                    console.print(f"[red] File not found at: {path}[/red]")
+                    continue
+                try:
+                    console.print(f"[blue] Extracting text from '{os.path.basename(path)}'...[/blue]")
+                    add_document_from_path(path)
+                    console.print("[bold green] File successfully saved to the local database![/bold green]")
+                except Exception as e:
+                    console.print(f"[red] Upload error: {e}[/red]")
+                continue
 
-                print(f"\n Answer: {final_answer}\n")
+            intent = classify_query(user_input)
+
+            if intent == "image":
+                result = handle_image_request(user_input, chat_history)
+                console.print("\n")
+                console.print(Panel(Markdown(result), title=" Image Search", border_style="cyan", expand=False))
+                continue
+            elif intent == "video":
+                result = handle_video_request(user_input, chat_history)
+                console.print("\n")
+                console.print(Panel(Markdown(result), title=" Video Search", border_style="cyan", expand=False))
+                continue
+            elif intent == "translate":
+                result = handle_translation(user_input)
+                console.print("\n")
+                console.print(Panel(Markdown(result), title=" Translation", border_style="cyan", expand=False))
+                continue
+
+            try:
+                # 2. Add an animated Loading Spinner while generating
+                with console.status("[bold cyan] AI is thinking...[/bold cyan]", spinner="dots"):
+                    if mode == "1":
+                        final_answer = online_rag(user_input, chat_history)
+                    elif mode == "2":
+                        final_answer = offline_rag(user_input, chat_history)
+                    else:
+                        final_answer = hybrid_rag(user_input, chat_history)
+
+                # --- RICH UI FORMATTING ---
+                console.print("\n")
+                formatted_answer = Markdown(final_answer)
+                
+                # 3. Present the answer in a beautiful Panel box
+                console.print(Panel(formatted_answer, title=" AI Assistant", border_style="cyan", expand=False))
+                
+                # Append to history so context can be carried over correctly on the next turn
+                chat_history.append((user_input, final_answer))
+
             except Exception as e:
-                print(f"\n Error generating answer: {e}\n")
+                console.print(f"\n[bold red] Error generating answer: {e}[/bold red]\n")
